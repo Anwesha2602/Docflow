@@ -1,0 +1,44 @@
+# ==============================
+# Java / Spring Boot
+# ==============================
+target/
+*.class
+
+# ==============================
+# IntelliJ / Eclipse
+# ==============================
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# ==============================
+# Logs
+# ==============================
+*.log
+
+# ==============================
+# Local uploaded files
+# ==============================
+backend/docflow/uploads/
+
+# ==============================
+# Environment / secrets
+# ==============================
+.env
+.env.*
+application-local.properties
+application-local.yml
+
+# ==============================
+# React / Node
+# ==============================
+frontend/node_modules/
+frontend/dist/
+
+# ==============================
+# OS
+# ==============================
+.DS_Store
+Thumbs.db

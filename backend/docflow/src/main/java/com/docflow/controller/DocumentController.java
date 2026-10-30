@@ -19,26 +19,33 @@ public class DocumentController {
         this.documentService = documentService;
     }
 
-    @PostMapping
+    //simply for creating the document
+    @PostMapping  
     public Document createDocument(@RequestParam String fileName) {
         return documentService.createDocument(fileName);
     }
     
+    //lists all the documents
     @GetMapping
     public List<Document> getAllDocuments() {
         return documentService.getAllDocuments();
     }
     
+    //list only a particular document based on the unique id which is accepted as path variable
     @GetMapping("/{id}")
     public Document getDocumentById(@PathVariable Long id) {
         return documentService.getDocumentById(id);
     }
     
+    //the file is uploaded
     @PostMapping("/upload")
     public Document uploadDocument(@RequestParam("file") MultipartFile file) {
         return documentService.uploadDocument(file);
     }
     
+    //to download a particular file. prepare the HTTP response(header--tells the client how to interpret the response)
+     //content type(tells explicitely it is pdf)
+     // body(the actual file is passed as resource in the body)
     @GetMapping("/{id}/download")
     public ResponseEntity<Resource> downloadDocument(@PathVariable Long id) {
 
@@ -55,11 +62,13 @@ public class DocumentController {
                 .body(resource);
     }
     
+    //for retrying a particular doc
     @PostMapping("/{id}/retry")
     public Document retryDocument(@PathVariable Long id) {
         return documentService.retryDocument(id);
     }
     
+    //get list of history files
     @GetMapping("/{id}/history")
     public List<ProcessingHistory> getProcessingHistory(
             @PathVariable Long id) {

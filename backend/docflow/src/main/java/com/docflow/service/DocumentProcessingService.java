@@ -1,10 +1,13 @@
+
 package com.docflow.service;
 
 import com.docflow.entity.Document;
 import com.docflow.entity.ProcessingHistory;
-import com.docflow.repository.BatchRepository;
+import com.docflow.entity.Batch;
+
 import com.docflow.repository.DocumentRepository;
 import com.docflow.repository.ProcessingHistoryRepository;
+import com.docflow.repository.BatchRepository;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -12,28 +15,35 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.io.File;
+import java.io.InputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+
 import java.time.LocalDateTime;
-import com.docflow.entity.Batch;
 import java.util.List;
-import com.docflow.repository.BatchRepository;
 
 @Service
 public class DocumentProcessingService {
 
-	private static final int MAX_ATTEMPTS = 3;
+    private static final int MAX_ATTEMPTS = 3;
+
     private final DocumentRepository documentRepository;
     private final ProcessingHistoryRepository processingHistoryRepository;
     private final BatchRepository batchRepository;
-    
+    private final S3StorageService s3StorageService;
+
     public DocumentProcessingService(
             DocumentRepository documentRepository,
             ProcessingHistoryRepository processingHistoryRepository,
-            BatchRepository batchRepository) {
+            BatchRepository batchRepository,
+            S3StorageService s3StorageService) {
 
         this.documentRepository = documentRepository;
         this.processingHistoryRepository = processingHistoryRepository;
         this.batchRepository = batchRepository;
+        this.s3StorageService = s3StorageService;
     }
 
     @Async
@@ -67,37 +77,52 @@ public class DocumentProcessingService {
 
         documentRepository.save(document);
 
+        // Temporary file used for PDF processing
+        Path tempFile = null;
+
         try {
 
-            // Get physical file
-            File file = new File(document.getFilePath());
+            // 1. Create a temporary PDF file
+            tempFile = Files.createTempFile("docflow-", ".pdf");
 
-            // Get file size before PDF processing
-            long fileSize = file.length();
+            // 2. Download PDF from S3
+            try (InputStream inputStream =
+                    s3StorageService.downloadFile(document.getFilePath())) {
 
-            // Open PDF
-            PDDocument pdf = Loader.loadPDF(file);
+                Files.copy(
+                        inputStream,
+                        tempFile,
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+            }
 
-            // Extract number of pages
-            int pageCount = pdf.getNumberOfPages();
+            // 3. Get file size
+            long fileSize = Files.size(tempFile);
 
-            // Save extracted information
+            // 4. Open PDF using PDFBox
+            int pageCount;
+
+            try (PDDocument pdf = Loader.loadPDF(tempFile.toFile())) {
+
+                pageCount = pdf.getNumberOfPages();
+            }
+
+            // 5. Save extracted information
             document.setPageCount(pageCount);
             document.setFileSize(fileSize);
 
-            // Processing completed
+            // 6. Mark processing as completed
             document.setStatus("COMPLETED");
 
             documentRepository.save(document);
+
             updateBatchStatus(document.getBatchId());
-            
+
+            // 7. Update processing history
             history.setStatus("COMPLETED");
             history.setCompletedAt(LocalDateTime.now());
 
             processingHistoryRepository.save(history);
-
-            // Close PDF
-            pdf.close();
 
             System.out.println(
                     "FINISHED processing: " + documentId
@@ -107,6 +132,7 @@ public class DocumentProcessingService {
 
         } catch (Exception e) {
 
+            // Mark document as failed
             document.setStatus("FAILED");
 
             document.setErrorMessage(
@@ -114,7 +140,7 @@ public class DocumentProcessingService {
             );
 
             documentRepository.save(document);
-            
+
             // Update processing history
             history.setStatus("FAILED");
 
@@ -141,8 +167,11 @@ public class DocumentProcessingService {
                 );
 
                 try {
+
                     Thread.sleep(5000);
+
                 } catch (InterruptedException e1) {
+
                     Thread.currentThread().interrupt();
 
                     System.out.println(
@@ -155,12 +184,15 @@ public class DocumentProcessingService {
 
                 System.out.println(
                         "Retrying document: " + documentId
-                                + " | Attempt: " + (history.getAttempt() + 1)
+                                + " | Attempt: "
+                                + (history.getAttempt() + 1)
                 );
 
                 document.setStatus("PENDING");
+
                 documentRepository.save(document);
 
+                // Retry processing
                 processDocument(documentId);
 
             } else {
@@ -169,15 +201,30 @@ public class DocumentProcessingService {
                         "Maximum attempts reached for document: "
                                 + documentId
                 );
-                
+
                 updateBatchStatus(document.getBatchId());
             }
-            
+
+        } finally {
+
+            // Always delete the temporary PDF
+            if (tempFile != null) {
+
+                try {
+
+                    Files.deleteIfExists(tempFile);
+
+                } catch (IOException cleanupException) {
+
+                    System.out.println(
+                            "Could not delete temporary file: "
+                                    + cleanupException.getMessage()
+                    );
+                }
+            }
         }
     }
 
-
-    
     private void updateBatchStatus(Long batchId) {
 
         if (batchId == null) {
@@ -223,5 +270,4 @@ public class DocumentProcessingService {
 
         batchRepository.save(batch);
     }
-
 }

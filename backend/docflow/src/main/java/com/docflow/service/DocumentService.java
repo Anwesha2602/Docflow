@@ -1,3 +1,4 @@
+
 package com.docflow.service;
 
 import com.docflow.entity.Document;
@@ -9,11 +10,13 @@ import com.docflow.repository.ProcessingHistoryRepository;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import java.util.UUID;
-import java.io.File;
-import java.util.List;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
+
+import java.io.InputStream;
+import java.io.IOException;
+import java.util.UUID;
+import java.util.List;
 
 @Service
 public class DocumentService {
@@ -21,34 +24,36 @@ public class DocumentService {
     private final DocumentRepository documentRepository;
     private final DocumentProcessingService documentProcessingService;
     private final ProcessingHistoryRepository processingHistoryRepository;
-    
+    private final S3StorageService s3StorageService;
+
     public DocumentService(
             DocumentRepository documentRepository,
             DocumentProcessingService documentProcessingService,
-            ProcessingHistoryRepository processingHistoryRepository) {
+            ProcessingHistoryRepository processingHistoryRepository,
+            S3StorageService s3StorageService) {
 
         this.documentRepository = documentRepository;
         this.documentProcessingService = documentProcessingService;
         this.processingHistoryRepository = processingHistoryRepository;
+        this.s3StorageService = s3StorageService;
     }
 
     public Document createDocument(String fileName) {
 
-    	Document document = new Document(fileName, "PENDING");
+        Document document = new Document(fileName, "PENDING");
 
-    	return documentRepository.save(document);
+        return documentRepository.save(document);
     }
-    
+
     public List<Document> getAllDocuments() {
         return documentRepository.findAll();
     }
-    
+
     public Document getDocumentById(Long id) {
         return documentRepository.findById(id)
                 .orElseThrow(() -> new DocumentNotFoundException(id));
     }
-    
-    
+
     public Document uploadDocument(MultipartFile file) {
 
         // 1. Validate file
@@ -71,85 +76,89 @@ public class DocumentService {
 
         try {
 
-            // 5. Create uploads directory
-            String uploadDir = System.getProperty("user.dir")
-                    + File.separator + "uploads";
+            // 5. Generate a unique S3 object key
+            String safeFileName = fileName.replaceAll(
+                    "[^a-zA-Z0-9._-]", "_"
+            );
 
-            File directory = new File(uploadDir);
+            String s3Key = "documents/"
+                    + UUID.randomUUID()
+                    + "_"
+                    + safeFileName;
 
-            if (!directory.exists()) {
-                directory.mkdirs();
+            // 6. Upload the PDF to S3
+            try (InputStream inputStream = file.getInputStream()) {
+
+                s3StorageService.uploadFile(
+                        s3Key,
+                        inputStream,
+                        file.getSize()
+                );
             }
 
-            // 6. Create file path
-            String uniqueFileName = UUID.randomUUID() + "_" + fileName;
-            String filePath = uploadDir
-                    + File.separator
-                    + uniqueFileName;
-
-            // 7. Save actual file to disk
-            file.transferTo(new File(filePath));
-
-            // 8. Create database record
+            // 7. Save document metadata in PostgreSQL
             Document document = new Document();
 
             document.setFileName(fileName);
-            document.setFilePath(filePath);
+
+            // filePath now stores the S3 object key, not a local path
+            document.setFilePath(s3Key);
+
             document.setStatus("PENDING");
 
-//            // 9. Save metadata to PostgreSQL
-//            return documentRepository.save(document);
-            
             Document savedDocument = documentRepository.save(document);
 
-            documentProcessingService.processDocument(savedDocument.getId());
+            // 8. Start asynchronous processing
+            documentProcessingService.processDocument(
+                    savedDocument.getId()
+            );
 
             return savedDocument;
 
         } catch (Exception e) {
-            throw new RuntimeException("Could not save file", e);
+            throw new RuntimeException("Could not upload document to S3", e);
         }
     }
-    
+
     public Resource downloadDocument(Long id) {
 
         Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new DocumentNotFoundException(id));
 
-        File file = new File(document.getFilePath());
+        try {
 
-        if (!file.exists()) {
-            throw new RuntimeException("File not found on disk");
+            // Retrieve the PDF stream from S3
+            InputStream inputStream =
+                    s3StorageService.downloadFile(document.getFilePath());
+
+            return new InputStreamResource(inputStream);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Could not download document from S3", e);
         }
-
-        return new FileSystemResource(file);
     }
-    
+
     public Document retryDocument(Long id) {
 
         Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new DocumentNotFoundException(id));
 
-        // Only FAILED documents can be retried
         if (!"FAILED".equals(document.getStatus())) {
             throw new RuntimeException(
                     "Only FAILED documents can be retried"
             );
         }
 
-        // Check how many attempts have already happened
         int attempts = processingHistoryRepository
                 .findByDocumentIdOrderByAttemptAsc(id)
                 .size();
 
-        // Do not allow more than 3 attempts
         if (attempts >= 3) {
             throw new RuntimeException(
                     "Maximum processing attempts reached"
             );
         }
 
-        // Reset processing information
         document.setStatus("PENDING");
         document.setErrorMessage(null);
         document.setPageCount(null);
@@ -157,15 +166,13 @@ public class DocumentService {
 
         Document savedDocument = documentRepository.save(document);
 
-        // Start processing asynchronously
         documentProcessingService.processDocument(savedDocument.getId());
 
         return savedDocument;
     }
-    
+
     public List<ProcessingHistory> getProcessingHistory(Long documentId) {
 
-        // Make sure the document exists
         documentRepository.findById(documentId)
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
 
@@ -173,7 +180,3 @@ public class DocumentService {
                 .findByDocumentIdOrderByAttemptAsc(documentId);
     }
 }
-
-
-
-

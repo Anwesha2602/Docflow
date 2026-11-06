@@ -7,6 +7,7 @@ import com.docflow.exception.InvalidFileException;
 import com.docflow.exception.DocumentNotFoundException;
 import com.docflow.repository.DocumentRepository;
 import com.docflow.repository.ProcessingHistoryRepository;
+import com.docflow.messaging.SqsMessageProducer;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -14,7 +15,6 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.InputStreamResource;
 
 import java.io.InputStream;
-import java.io.IOException;
 import java.util.UUID;
 import java.util.List;
 
@@ -22,20 +22,20 @@ import java.util.List;
 public class DocumentService {
 
     private final DocumentRepository documentRepository;
-    private final DocumentProcessingService documentProcessingService;
     private final ProcessingHistoryRepository processingHistoryRepository;
     private final S3StorageService s3StorageService;
+    private final SqsMessageProducer sqsMessageProducer;
 
     public DocumentService(
             DocumentRepository documentRepository,
-            DocumentProcessingService documentProcessingService,
             ProcessingHistoryRepository processingHistoryRepository,
-            S3StorageService s3StorageService) {
+            S3StorageService s3StorageService,
+            SqsMessageProducer sqsMessageProducer) {
 
         this.documentRepository = documentRepository;
-        this.documentProcessingService = documentProcessingService;
         this.processingHistoryRepository = processingHistoryRepository;
         this.s3StorageService = s3StorageService;
+        this.sqsMessageProducer = sqsMessageProducer;
     }
 
     public Document createDocument(String fileName) {
@@ -100,23 +100,22 @@ public class DocumentService {
             Document document = new Document();
 
             document.setFileName(fileName);
-
-            // filePath now stores the S3 object key, not a local path
             document.setFilePath(s3Key);
-
             document.setStatus("PENDING");
 
             Document savedDocument = documentRepository.save(document);
 
-            // 8. Start asynchronous processing
-            documentProcessingService.processDocument(
+            // 8. Send document ID to SQS
+            sqsMessageProducer.sendDocumentProcessingMessage(
                     savedDocument.getId()
             );
 
             return savedDocument;
 
         } catch (Exception e) {
-            throw new RuntimeException("Could not upload document to S3", e);
+            throw new RuntimeException(
+                    "Could not upload document or send processing message", e
+            );
         }
     }
 
@@ -134,7 +133,9 @@ public class DocumentService {
             return new InputStreamResource(inputStream);
 
         } catch (Exception e) {
-            throw new RuntimeException("Could not download document from S3", e);
+            throw new RuntimeException(
+                    "Could not download document from S3", e
+            );
         }
     }
 
@@ -149,16 +150,6 @@ public class DocumentService {
             );
         }
 
-        int attempts = processingHistoryRepository
-                .findByDocumentIdOrderByAttemptAsc(id)
-                .size();
-
-        if (attempts >= 3) {
-            throw new RuntimeException(
-                    "Maximum processing attempts reached"
-            );
-        }
-
         document.setStatus("PENDING");
         document.setErrorMessage(null);
         document.setPageCount(null);
@@ -166,7 +157,10 @@ public class DocumentService {
 
         Document savedDocument = documentRepository.save(document);
 
-        documentProcessingService.processDocument(savedDocument.getId());
+        // Send a fresh processing message to SQS
+        sqsMessageProducer.sendDocumentProcessingMessage(
+                savedDocument.getId()
+        );
 
         return savedDocument;
     }

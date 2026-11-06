@@ -12,7 +12,6 @@ import com.docflow.repository.BatchRepository;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -26,8 +25,6 @@ import java.util.List;
 
 @Service
 public class DocumentProcessingService {
-
-    private static final int MAX_ATTEMPTS = 3;
 
     private final DocumentRepository documentRepository;
     private final ProcessingHistoryRepository processingHistoryRepository;
@@ -46,7 +43,6 @@ public class DocumentProcessingService {
         this.s3StorageService = s3StorageService;
     }
 
-    @Async
     public void processDocument(Long documentId) {
 
         System.out.println("START processing: " + documentId);
@@ -55,6 +51,17 @@ public class DocumentProcessingService {
                 .orElseThrow(() ->
                         new RuntimeException("Document not found: " + documentId));
 
+        
+        // Idempotency check
+        if ("COMPLETED".equals(document.getStatus())) {
+
+            System.out.println(
+                    "Document already completed. Skipping processing: "
+                            + documentId
+            );
+
+            return;
+        }
         // Create a history record for this processing attempt
         ProcessingHistory history = new ProcessingHistory();
 
@@ -158,52 +165,11 @@ public class DocumentProcessingService {
 
             e.printStackTrace();
 
-            // Check how many attempts have been made
-            if (history.getAttempt() < MAX_ATTEMPTS) {
-
-                System.out.println(
-                        "Waiting 5 seconds before retrying document: "
-                                + documentId
-                );
-
-                try {
-
-                    Thread.sleep(5000);
-
-                } catch (InterruptedException e1) {
-
-                    Thread.currentThread().interrupt();
-
-                    System.out.println(
-                            "Retry interrupted for document: "
-                                    + documentId
-                    );
-
-                    return;
-                }
-
-                System.out.println(
-                        "Retrying document: " + documentId
-                                + " | Attempt: "
-                                + (history.getAttempt() + 1)
-                );
-
-                document.setStatus("PENDING");
-
-                documentRepository.save(document);
-
-                // Retry processing
-                processDocument(documentId);
-
-            } else {
-
-                System.out.println(
-                        "Maximum attempts reached for document: "
-                                + documentId
-                );
-
-                updateBatchStatus(document.getBatchId());
-            }
+            // Propagate the failure to the SQS consumer.
+            // The consumer must NOT delete the message.
+            throw new RuntimeException(
+                    "Document processing failed: " + documentId, e
+            );
 
         } finally {
 
@@ -225,49 +191,53 @@ public class DocumentProcessingService {
         }
     }
 
-    private void updateBatchStatus(Long batchId) {
 
-        if (batchId == null) {
-            return;
-        }
+private void updateBatchStatus(Long batchId) {
 
-        Batch batch = batchRepository.findById(batchId)
-                .orElseThrow(() ->
-                        new RuntimeException("Batch not found: " + batchId));
-
-        List<Document> documents =
-                documentRepository.findByBatchId(batchId);
-
-        int completed = 0;
-        int failed = 0;
-
-        for (Document document : documents) {
-
-            if ("COMPLETED".equals(document.getStatus())) {
-                completed++;
-            }
-
-            if ("FAILED".equals(document.getStatus())) {
-                failed++;
-            }
-        }
-
-        batch.setCompletedDocuments(completed);
-        batch.setFailedDocuments(failed);
-
-        if (completed + failed == batch.getTotalDocuments()) {
-
-            if (failed > 0) {
-                batch.setStatus("COMPLETED_WITH_ERRORS");
-            } else {
-                batch.setStatus("COMPLETED");
-            }
-
-        } else {
-
-            batch.setStatus("PROCESSING");
-        }
-
-        batchRepository.save(batch);
+    if (batchId == null) {
+        return;
     }
+
+    Batch batch = batchRepository.findById(batchId)
+            .orElseThrow(() ->
+                    new RuntimeException("Batch not found: " + batchId));
+
+    List<Document> documents =
+            documentRepository.findByBatchId(batchId);
+
+    int completed = 0;
+    int permanentlyFailed = 0;
+
+    for (Document document : documents) {
+
+        if ("COMPLETED".equals(document.getStatus())) {
+            completed++;
+        }
+
+        if ("PERMANENTLY_FAILED".equals(document.getStatus())) {
+            permanentlyFailed++;
+        }
+    }
+
+    batch.setCompletedDocuments(completed);
+    batch.setFailedDocuments(permanentlyFailed);
+
+    int total = batch.getTotalDocuments() == null
+            ? 0 : batch.getTotalDocuments();
+
+    if (completed + permanentlyFailed == total) {
+
+        if (permanentlyFailed > 0) {
+            batch.setStatus("COMPLETED_WITH_ERRORS");
+        } else {
+            batch.setStatus("COMPLETED");
+        }
+
+    } else {
+        batch.setStatus("PROCESSING");
+    }
+
+    batchRepository.save(batch);
+}
+
 }

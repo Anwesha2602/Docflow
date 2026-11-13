@@ -99,7 +99,38 @@
 		    <groupId>software.amazon.awssdk</groupId>
 		    <artifactId>sqs</artifactId>
 		</dependency>
-	</dependencies>
+		<!-- Authentication and authorization -->
+		
+		<!-- Spring Security -->
+		<dependency>
+		    <groupId>org.springframework.boot</groupId>
+		    <artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		
+		<!-- JWT API -->
+		<dependency>
+		    <groupId>io.jsonwebtoken</groupId>
+		    <artifactId>jjwt-api</artifactId>
+		    <version>0.12.6</version>
+		</dependency>
+		
+		<!-- JWT Implementation -->
+		<dependency>
+		    <groupId>io.jsonwebtoken</groupId>
+		    <artifactId>jjwt-impl</artifactId>
+		    <version>0.12.6</version>
+		    <scope>runtime</scope>
+		</dependency>
+		
+		<!-- JWT Jackson integration -->
+		<dependency>
+		    <groupId>io.jsonwebtoken</groupId>
+		    <artifactId>jjwt-jackson</artifactId>
+		    <version>0.12.6</version>
+		    <scope>runtime</scope>
+		</dependency>
+
+			</dependencies>
 
 	<build>
 		<plugins>

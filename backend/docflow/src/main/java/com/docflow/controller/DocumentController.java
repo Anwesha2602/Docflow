@@ -1,5 +1,6 @@
 package com.docflow.controller;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.security.access.prepost.PreAuthorize;
 import com.docflow.entity.Document;
 import com.docflow.entity.ProcessingHistory;
 import com.docflow.service.DocumentService;
@@ -9,6 +10,12 @@ import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import com.docflow.entity.User;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import com.docflow.entity.User;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+
 @RestController
 @RequestMapping("/api/documents")
 public class DocumentController {
@@ -19,39 +26,50 @@ public class DocumentController {
         this.documentService = documentService;
     }
 
-    //simply for creating the document
-    @PostMapping  
-    public Document createDocument(@RequestParam String fileName) {
-        return documentService.createDocument(fileName);
+ // Create document
+    @PostMapping
+    public Document createDocument(
+            @RequestParam String fileName,
+            @AuthenticationPrincipal User user) {
+
+        return documentService.createDocument(fileName, user);
     }
-    
-    //lists all the documents
+
+    // Get all documents
     @GetMapping
-    public List<Document> getAllDocuments() {
-        return documentService.getAllDocuments();
+    public List<Document> getAllDocuments(
+            @AuthenticationPrincipal User user) {
+
+        return documentService.getAllDocuments(user);
     }
-    
-    //list only a particular document based on the unique id which is accepted as path variable
+
+    // Get document by ID
     @GetMapping("/{id}")
-    public Document getDocumentById(@PathVariable Long id) {
-        return documentService.getDocumentById(id);
+    public Document getDocumentById(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
+
+        return documentService.getDocumentById(id, user);
     }
-    
-    //the file is uploaded
+
+    // Upload document
     @PostMapping("/upload")
-    public Document uploadDocument(@RequestParam("file") MultipartFile file) {
-        return documentService.uploadDocument(file);
+    public Document uploadDocument(
+            @RequestParam("file") MultipartFile file,
+            @AuthenticationPrincipal User user) {
+
+        return documentService.uploadDocument(file, user);
     }
-    
-    //to download a particular file. prepare the HTTP response(header--tells the client how to interpret the response)
-     //content type(tells explicitely it is pdf)
-     // body(the actual file is passed as resource in the body)
+
+    // Download document
     @GetMapping("/{id}/download")
-    public ResponseEntity<Resource> downloadDocument(@PathVariable Long id) {
+    public ResponseEntity<Resource> downloadDocument(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
 
-        Document document = documentService.getDocumentById(id);
+        Document document = documentService.getDocumentById(id, user);
 
-        Resource resource = documentService.downloadDocument(id);
+        Resource resource = documentService.downloadDocument(id, user);
 
         return ResponseEntity.ok()
                 .header(
@@ -61,19 +79,24 @@ public class DocumentController {
                 .contentType(MediaType.APPLICATION_PDF)
                 .body(resource);
     }
-    
-    //for retrying a particular doc
+
+    // Retry document
     @PostMapping("/{id}/retry")
-    public Document retryDocument(@PathVariable Long id) {
-        return documentService.retryDocument(id);
+    @PreAuthorize("hasRole('ADMIN')")
+    public Document retryDocument(
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
+
+        return documentService.retryDocument(id, user);
     }
-    
-    //get list of history files
+
+    // Get processing history
     @GetMapping("/{id}/history")
     public List<ProcessingHistory> getProcessingHistory(
-            @PathVariable Long id) {
+            @PathVariable Long id,
+            @AuthenticationPrincipal User user) {
 
-        return documentService.getProcessingHistory(id);
+        return documentService.getProcessingHistory(id, user);
     }
    
 }

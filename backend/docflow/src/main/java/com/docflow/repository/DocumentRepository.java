@@ -6,4 +6,5 @@ import java.util.List;
 
 public interface DocumentRepository extends JpaRepository<Document, Long> {
 	List<Document> findByBatchId(Long batchId);
+	List<Document> findByOwner_Id(Long userId);
 }

@@ -1,6 +1,6 @@
 
 package com.docflow.service;
-
+import com.docflow.entity.User;
 import com.docflow.entity.Document;
 import com.docflow.entity.ProcessingHistory;
 import com.docflow.exception.InvalidFileException;
@@ -17,7 +17,9 @@ import org.springframework.core.io.InputStreamResource;
 import java.io.InputStream;
 import java.util.UUID;
 import java.util.List;
-
+import com.docflow.entity.User;
+import com.docflow.entity.Role;
+import org.springframework.security.access.AccessDeniedException;
 @Service
 public class DocumentService {
 
@@ -38,23 +40,29 @@ public class DocumentService {
         this.sqsMessageProducer = sqsMessageProducer;
     }
 
-    public Document createDocument(String fileName) {
+    public Document createDocument(String fileName, User user) {
 
         Document document = new Document(fileName, "PENDING");
+        document.setOwner(user);
 
         return documentRepository.save(document);
     }
 
-    public List<Document> getAllDocuments() {
-        return documentRepository.findAll();
+    public List<Document> getAllDocuments(User user) {
+
+        if (user.getRole() == Role.ADMIN) {
+            return documentRepository.findAll();
+        }
+
+        return documentRepository.findByOwner_Id(user.getId());
     }
 
-    public Document getDocumentById(Long id) {
-        return documentRepository.findById(id)
-                .orElseThrow(() -> new DocumentNotFoundException(id));
+    public Document getDocumentById(Long id, User user) {
+
+        return getAuthorizedDocument(id, user);
     }
 
-    public Document uploadDocument(MultipartFile file) {
+    public Document uploadDocument(MultipartFile file, User user) {
 
         // 1. Validate file
         if (file == null || file.isEmpty()) {
@@ -102,6 +110,7 @@ public class DocumentService {
             document.setFileName(fileName);
             document.setFilePath(s3Key);
             document.setStatus("PENDING");
+            document.setOwner(user);
 
             Document savedDocument = documentRepository.save(document);
 
@@ -119,10 +128,9 @@ public class DocumentService {
         }
     }
 
-    public Resource downloadDocument(Long id) {
+    public Resource downloadDocument(Long id, User user) {
 
-        Document document = documentRepository.findById(id)
-                .orElseThrow(() -> new DocumentNotFoundException(id));
+    	Document document = getAuthorizedDocument(id, user);
 
         try {
 
@@ -139,10 +147,15 @@ public class DocumentService {
         }
     }
 
-    public Document retryDocument(Long id) {
+    public Document retryDocument(Long id, User user) {
 
-        Document document = documentRepository.findById(id)
-                .orElseThrow(() -> new DocumentNotFoundException(id));
+    	if (user.getRole() != Role.ADMIN) {
+    	    throw new AccessDeniedException(
+    	            "Only administrators can retry documents"
+    	    );
+    	}
+
+    	Document document = getAuthorizedDocument(id, user);
 
         if (!"FAILED".equals(document.getStatus())) {
             throw new RuntimeException(
@@ -165,12 +178,30 @@ public class DocumentService {
         return savedDocument;
     }
 
-    public List<ProcessingHistory> getProcessingHistory(Long documentId) {
+    public List<ProcessingHistory> getProcessingHistory(Long documentId, User user) {
 
-        documentRepository.findById(documentId)
-                .orElseThrow(() -> new DocumentNotFoundException(documentId));
+    	getAuthorizedDocument(documentId, user);
 
         return processingHistoryRepository
                 .findByDocumentIdOrderByAttemptAsc(documentId);
+    }
+    
+    private Document getAuthorizedDocument(Long id, User user) {
+
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DocumentNotFoundException(id));
+
+        boolean isAdmin = user.getRole() == Role.ADMIN;
+
+        boolean isOwner = document.getOwner() != null
+                && document.getOwner().getId().equals(user.getId());
+
+        if (!isAdmin && !isOwner) {
+            throw new AccessDeniedException(
+                    "You are not authorized to access this document"
+            );
+        }
+
+        return document;
     }
 }
